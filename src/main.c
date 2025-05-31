@@ -8,20 +8,22 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <stdbool.h>
-#include <math.h>
-#include <time.h>
 #include <nxdk/net.h>
 #include "xifi_detect.h"
 #include "send_cmd.h"
 #include "kybd.h"
 
-// ---- GLOBALS FOR SCREEN SIZE ----
-static int screen_width = 1280, screen_height = 720;
+#define MUSIC_VOLUME      0.3f
+#define SCREEN_WIDTH_DEF  1280
+#define SCREEN_HEIGHT_DEF 720
+#define MENU_ITEM_COUNT   7
+#define MENU_REPEAT_DELAY 200
+#define MENU_REPEAT_RATE  60
 
-#define MUSIC_VOLUME 0.3f
-
+static int screen_width = SCREEN_WIDTH_DEF, screen_height = SCREEN_HEIGHT_DEF;
 static FILE* audio_file = NULL;
 
+// --- Audio callback: applies volume scaling and loops audio ---
 void AudioCallback(void* userdata, Uint8* stream, int len) {
     if (!audio_file) {
         SDL_memset(stream, 0, len);
@@ -42,6 +44,7 @@ void AudioCallback(void* userdata, Uint8* stream, int len) {
     }
 }
 
+// --- Draws an octagon border ---
 static void DrawOct(SDL_Renderer *r, SDL_Rect rc, int m, SDL_Color c) {
     int l = rc.x - m, t = rc.y - m;
     int w = rc.w + 2*m, h = rc.h + 2*m;
@@ -56,20 +59,13 @@ static void DrawOct(SDL_Renderer *r, SDL_Rect rc, int m, SDL_Color c) {
     SDL_RenderDrawLines(r, pts, 9);
 }
 
-// Fill the inside of an octagon with the given color
-static void FillOct(SDL_Renderer *r, SDL_Rect rc, int m, SDL_Color c)
-{
+// --- Fills the inside of an octagon ---
+static void FillOct(SDL_Renderer *r, SDL_Rect rc, int m, SDL_Color c) {
     int l = rc.x - m, t = rc.y - m;
     int w = rc.w + 2*m, h = rc.h + 2*m;
     SDL_Point pts[8] = {
-        {l+m,    t},        // Top-left
-        {l+w-m,  t},        // Top-right
-        {l+w,    t+m},      // Right-top
-        {l+w,    t+h-m},    // Right-bottom
-        {l+w-m,  t+h},      // Bottom-right
-        {l+m,    t+h},      // Bottom-left
-        {l,      t+h-m},    // Left-bottom
-        {l,      t+m},      // Left-top
+        {l+m,    t}, {l+w-m,  t}, {l+w,    t+m}, {l+w,    t+h-m},
+        {l+w-m,  t+h}, {l+m,    t+h}, {l,      t+h-m}, {l,      t+m}
     };
     SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
     for (int y = t; y <= t + h; y++) {
@@ -92,16 +88,18 @@ static void FillOct(SDL_Renderer *r, SDL_Rect rc, int m, SDL_Color c)
 }
 
 // ---- SCALED COORDINATE HELPERS ----
-#define SCALEX(x) ((int)((float)(x) * screen_width / 1280.0f))
-#define SCALEY(y) ((int)((float)(y) * screen_height / 720.0f))
-#define SCALEI(i, base) ((int)((float)(i) * screen_height / (float)(base)))
+#define SCALEX(x) ((int)((float)(x) * screen_width / (float)SCREEN_WIDTH_DEF))
+#define SCALEY(y) ((int)((float)(y) * screen_height / (float)SCREEN_HEIGHT_DEF))
 
 int main(void) {
-    // --- PROBE AND SET THE BEST VIDEO MODE ---
+    // Set texture filtering to linear for smooth scaling of images/logos
+    SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+
+    // --- VIDEO MODE PROBE ---
     struct { int w, h, mode; } modes[] = {
-        {1280, 720, REFRESH_DEFAULT}, // 720p
-        {720, 480, REFRESH_DEFAULT},  // 480p
-        {640, 480, REFRESH_DEFAULT},  // 480i fallback
+        {1280, 720, REFRESH_DEFAULT},
+        {720, 480, REFRESH_DEFAULT},
+        {640, 480, REFRESH_DEFAULT},
     };
     bool found = false;
     for (size_t i = 0; i < sizeof(modes)/sizeof(modes[0]); ++i) {
@@ -128,7 +126,7 @@ int main(void) {
 
     XiFi_StartDetectionThread(2000);
 
-    // Audio setup
+    // --- AUDIO SETUP ---
     audio_file = fopen("D:\\media\\bg\\bg.wav", "rb");
     if (!audio_file) return 0;
     static char buf[64*1024];
@@ -143,6 +141,7 @@ int main(void) {
     if (SDL_OpenAudio(&spec, NULL) < 0) return 0;
     SDL_PauseAudio(0);
 
+    // --- CONTROLLER SETUP ---
     SDL_GameController* controller = NULL;
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (SDL_IsGameController(i)) {
@@ -151,12 +150,19 @@ int main(void) {
         }
     }
 
+    // --- WINDOW & RENDERER ---
     SDL_Window* window = SDL_CreateWindow(
         "XiFi Configuration",
         SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
         screen_width, screen_height, SDL_WINDOW_SHOWN
     );
+    if (!window) return 0;
+
     SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+    if (!renderer) {
+        SDL_DestroyWindow(window);
+        return 0;
+    }
 
     SDL_Surface* bgSurface = IMG_Load("D:\\media\\img\\background.jpg");
     SDL_Texture* bgTexture = bgSurface
@@ -164,10 +170,10 @@ int main(void) {
         : NULL;
     if (bgSurface) SDL_FreeSurface(bgSurface);
 
-    // SCALED FONT SIZES (relative to height)
-    int font48_sz = screen_height/15;   // ~48pt for 720p
-    int font24_sz = screen_height/30;   // ~24pt for 720p
-    int font28_sz = screen_height/25;   // ~28pt for 720p
+    // --- FONT SIZES ---
+    int font48_sz = screen_height/15;
+    int font24_sz = screen_height/30;
+    int font28_sz = screen_height/25;
 
     TTF_Font* font48 = TTF_OpenFont("D:\\media\\font\\font.ttf", font48_sz);
     TTF_Font* font24 = TTF_OpenFont("D:\\media\\font\\font.ttf", font24_sz);
@@ -176,24 +182,25 @@ int main(void) {
     SDL_Texture* titleTex = NULL;
     SDL_Rect titleR = {0};
     if (font48) {
-        SDL_Surface* ts = TTF_RenderText_Solid(
+        SDL_Surface* ts = TTF_RenderText_Blended(
             font48, "XiFi Configuration", (SDL_Color){255,255,255,255});
         titleTex = SDL_CreateTextureFromSurface(renderer, ts);
         titleR = (SDL_Rect){ (screen_width - ts->w)/2, SCALEY(50), ts->w, ts->h };
         SDL_FreeSurface(ts);
     }
 
+    // --- BOTTOM "PRESS B TO EXIT" LABEL ---
     SDL_Texture *ep=NULL, *eb=NULL, *ep2=NULL;
     SDL_Rect epr={0}, ebr={0}, ep2r={0};
     if (font24) {
         SDL_Color white={200,200,200,255}, red={255,0,0,255};
-        SDL_Surface* s1 = TTF_RenderText_Solid(font24, "Press ", white);
+        SDL_Surface* s1 = TTF_RenderText_Blended(font24, "Press ", white);
         ep = SDL_CreateTextureFromSurface(renderer, s1);
         epr = (SDL_Rect){0,0,s1->w,s1->h}; SDL_FreeSurface(s1);
-        SDL_Surface* s2 = TTF_RenderText_Solid(font24, "B", red);
+        SDL_Surface* s2 = TTF_RenderText_Blended(font24, "B", red);
         eb = SDL_CreateTextureFromSurface(renderer, s2);
         ebr = (SDL_Rect){0,0,s2->w,s2->h}; SDL_FreeSurface(s2);
-        SDL_Surface* s3 = TTF_RenderText_Solid(font24, " to exit", white);
+        SDL_Surface* s3 = TTF_RenderText_Blended(font24, " to exit", white);
         ep2 = SDL_CreateTextureFromSurface(renderer, s3);
         ep2r = (SDL_Rect){0,0,s3->w,s3->h}; SDL_FreeSurface(s3);
         int totalW = epr.w + ebr.w + ep2r.w;
@@ -202,27 +209,29 @@ int main(void) {
         ep2r.x= ebr.x + ebr.w;      ep2r.y= epr.y;
     }
 
+    // --- XIFI/STATUS/IP ---
     SDL_Texture *xiT=NULL, *stT=NULL, *ipT=NULL;
     SDL_Rect xiR={SCALEX(20),0,0,0}, stR={0}, ipR={0};
     if (font24) {
-        SDL_Surface* sx = TTF_RenderText_Solid(
+        SDL_Surface* sx = TTF_RenderText_Blended(
             font24, "XiFi ", (SDL_Color){255,255,255,255});
         xiT = SDL_CreateTextureFromSurface(renderer, sx);
         xiR = (SDL_Rect){SCALEX(20), screen_height - sx->h - SCALEY(20), sx->w, sx->h};
         SDL_FreeSurface(sx);
     }
 
-    const char* items[7] = {
+    // --- MENU ITEMS ---
+    const char* items[MENU_ITEM_COUNT] = {
         "Start XiFi Portal", "Clear WiFi Password", "Turn off OLED",
         "Turn on OLED",      "Set Custom Status",   "Clear Custom Status",
         "About"
     };
-    SDL_Rect mrect[7];
+    SDL_Rect mrect[MENU_ITEM_COUNT];
     int cx[2] = {screen_width/4, 3*screen_width/4};
     int ry[4] = {SCALEY(200),SCALEY(300),SCALEY(400),SCALEY(500)};
     int cw = SCALEX(400), ch = SCALEY(80);
-    for (int i = 0; i < 7; i++) {
-        SDL_Surface* ms = TTF_RenderText_Solid(
+    for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+        SDL_Surface* ms = TTF_RenderText_Blended(
             font24, items[i], (SDL_Color){255,255,255,255});
         int w = ms->w, h = ms->h; SDL_FreeSurface(ms);
         int col = (i<6 ? i%2 : 0), row = (i<6 ? i/2 : 3);
@@ -230,8 +239,7 @@ int main(void) {
         int py = ry[row] - ch/2;
         mrect[i] = (SDL_Rect){ px+(cw-w)/2, py+(ch-h)/2, w, h };
     }
-    int selected = 0, aboutOpen = 0;
-    int kybdOpen = 0;
+    int selected = 0, aboutOpen = 0, kybdOpen = 0;
     char kb_text[33] = {0};
 
     SDL_Texture *dcT=NULL, *trT=NULL;
@@ -242,23 +250,20 @@ int main(void) {
         trT = t ? SDL_CreateTextureFromSurface(renderer, t) : NULL; if(t)SDL_FreeSurface(t);
     }
 
+    // --- MENU FAST KEY REPEAT ---
+    static int menu_repeat_dir = 0;
+    static uint32_t menu_repeat_start = 0, menu_repeat_last = 0;
+
     SDL_Event event;
     while (1) {
         // ---- MAIN EVENT LOOP ----
         while (SDL_PollEvent(&event)) {
             if (kybdOpen) {
                 int ret = kybd_handle_event(&event, kb_text, sizeof(kb_text));
-                if (ret == KYBD_DONE) {
-                    if (XiFi_IsPresent()) {
-                        char hexbuf[67] = {0};
-                        ascii_to_hex(kb_text, hexbuf, sizeof(hexbuf));
-                        send_cmd(XiFi_GetIP(), "0110", hexbuf);
-                    }
-                    kb_text[0] = 0;
+                if (ret == KYBD_DONE || ret == KYBD_CANCELED) {
+                    // Always reset keyboard state/buffer
                     kybdOpen = 0;
-                } else if (ret == KYBD_CANCELED) {
                     kb_text[0] = 0;
-                    kybdOpen = 0;
                 }
                 continue;
             }
@@ -282,7 +287,10 @@ int main(void) {
                                 case 2: send_cmd(XiFi_GetIP(), "010E", NULL); break;
                                 case 3: send_cmd(XiFi_GetIP(), "010F", NULL); break;
                                 case 4:
-                                    if (xifiPresent) { kb_text[0]=0; kybdOpen=1; }
+                                    if (xifiPresent) {
+                                        kybdOpen = 1;     // always re-enable overlay
+                                        kb_text[0] = 0;   // always clear buffer on entry
+                                    }
                                     break;
                                 case 5: send_cmd(XiFi_GetIP(), "0111", NULL); break;
                                 case 6: aboutOpen = 1; break;
@@ -295,21 +303,62 @@ int main(void) {
                             if (!xifiPresent) break;
                             send_cmd(XiFi_GetIP(), "0113", NULL); break;
                         case SDL_CONTROLLER_BUTTON_DPAD_UP:
-                            selected = (selected + 5) % 7;
+                            selected = (selected + 5) % MENU_ITEM_COUNT;
                             if (selected == 6) selected = 4;
+                            menu_repeat_dir = 1;
+                            menu_repeat_start = menu_repeat_last = SDL_GetTicks();
                             break;
                         case SDL_CONTROLLER_BUTTON_DPAD_DOWN:
                             if (selected < 4) selected += 2;
                             else if (selected < 6) selected = 6;
                             else selected %= 2;
+                            menu_repeat_dir = 2;
+                            menu_repeat_start = menu_repeat_last = SDL_GetTicks();
                             break;
                         case SDL_CONTROLLER_BUTTON_DPAD_LEFT:
                             if (selected % 2) selected--;
+                            menu_repeat_dir = 3;
+                            menu_repeat_start = menu_repeat_last = SDL_GetTicks();
                             break;
                         case SDL_CONTROLLER_BUTTON_DPAD_RIGHT:
                             if (selected % 2 == 0 && selected < 5) selected++;
+                            menu_repeat_dir = 4;
+                            menu_repeat_start = menu_repeat_last = SDL_GetTicks();
                             break;
                     }
+                }
+            } else if (event.type == SDL_CONTROLLERBUTTONUP) {
+                if (event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_UP ||
+                    event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_DOWN ||
+                    event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_LEFT ||
+                    event.cbutton.button == SDL_CONTROLLER_BUTTON_DPAD_RIGHT) {
+                    menu_repeat_dir = 0;
+                }
+            }
+        }
+
+        // ---- MENU FAST KEY REPEAT ----
+        if (!kybdOpen && menu_repeat_dir != 0) {
+            uint32_t now = SDL_GetTicks();
+            if (now - menu_repeat_start > MENU_REPEAT_DELAY &&
+                now - menu_repeat_last > MENU_REPEAT_RATE) {
+                menu_repeat_last = now;
+                switch (menu_repeat_dir) {
+                    case 1: // UP
+                        selected = (selected + 5) % MENU_ITEM_COUNT;
+                        if (selected == 6) selected = 4;
+                        break;
+                    case 2: // DOWN
+                        if (selected < 4) selected += 2;
+                        else if (selected < 6) selected = 6;
+                        else selected %= 2;
+                        break;
+                    case 3: // LEFT
+                        if (selected % 2) selected--;
+                        break;
+                    case 4: // RIGHT
+                        if (selected % 2 == 0 && selected < 5) selected++;
+                        break;
                 }
             }
         }
@@ -317,21 +366,21 @@ int main(void) {
         // ---- FAST KEYBOARD REPEAT FOR ONSCREEN KEYBOARD ----
         if (kybdOpen) kybd_update_repeat();
 
-        // -- Render status and IP textures --
+        // -- STATUS AND IP TEXTURES --
         if (stT) SDL_DestroyTexture(stT);
         if (ipT) SDL_DestroyTexture(ipT);
         const char* statusText = XiFi_IsPresent() ? "Detected" : "Not Detected";
         SDL_Color   statusCol  = XiFi_IsPresent()
                                  ? (SDL_Color){0,255,0,255}
                                  : (SDL_Color){255,0,0,255};
-        SDL_Surface* ss = TTF_RenderText_Solid(font24, statusText, statusCol);
+        SDL_Surface* ss = TTF_RenderText_Blended(font24, statusText, statusCol);
         stT = SDL_CreateTextureFromSurface(renderer, ss);
         stR = (SDL_Rect){ xiR.x + xiR.w, xiR.y, ss->w, ss->h };
         SDL_FreeSurface(ss);
 
         const char* show_ip = XiFi_IsPresent() ? XiFi_GetIP() : "";
         if (show_ip[0]) {
-            SDL_Surface* ips = TTF_RenderText_Solid(font24, show_ip, (SDL_Color){255,255,255,255});
+            SDL_Surface* ips = TTF_RenderText_Blended(font24, show_ip, (SDL_Color){255,255,255,255});
             ipT = SDL_CreateTextureFromSurface(renderer, ips);
             ipR = (SDL_Rect){ xiR.x + xiR.w + stR.w + SCALEX(10), xiR.y, ips->w, ips->h };
             SDL_FreeSurface(ips);
@@ -344,51 +393,16 @@ int main(void) {
         if (bgTexture)    SDL_RenderCopy(renderer, bgTexture, NULL, NULL);
         if (titleTex)     SDL_RenderCopy(renderer, titleTex,   NULL, &titleR);
 
-        if (aboutOpen) {
-            SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
-            SDL_Rect ov={SCALEX(240),SCALEY(140),SCALEX(800),SCALEY(440)};
-            SDL_RenderFillRect(renderer, &ov);
-
-            const char* lines[] = {
-                "XiFi Config", "", "Code by:", "Darkone83", "",
-                "Music By:", "Darkone83"
-            };
-            for (int i = 0; i < 7; i++) {
-                if (lines[i][0]) {
-                    SDL_Surface* ls = TTF_RenderText_Solid(
-                        font28, lines[i], (SDL_Color){255,255,255,255});
-                    SDL_Texture* lt = SDL_CreateTextureFromSurface(renderer, ls);
-                    SDL_Rect dr = {
-                        (screen_width - ls->w)/2,
-                        SCALEY(160) + i*SCALEY(40),
-                        ls->w, ls->h
-                    };
-                    SDL_FreeSurface(ls);
-                    SDL_RenderCopy(renderer, lt, NULL, &dr);
-                    SDL_DestroyTexture(lt);
-                }
-            }
-            int sz = SCALEY(64);
-            int startX = (screen_width - (sz + SCALEX(20) + sz)) / 2;
-            int logoY = SCALEY(140) + 7*SCALEY(40) + SCALEY(20);
-            SDL_Rect r1 = {startX, logoY, sz, sz};
-            SDL_Rect r2 = {startX + sz + SCALEX(20), logoY, sz, sz};
-            if (dcT) SDL_RenderCopy(renderer, dcT, NULL, &r1);
-            if (trT) SDL_RenderCopy(renderer, trT, NULL, &r2);
-
-        } else if (kybdOpen) {
-            kybd_draw(renderer, screen_width, screen_height, kb_text);
-
-        } else {
-            // --- Menu highlight effect: filled octagon, drop shadow, oct border ---
-            bool xifiPresent = XiFi_IsPresent();
-            for (int i = 0; i < 7; i++) {
+        // --- Menu and overlay layering ---
+        bool xifiPresent = XiFi_IsPresent();
+        // Draw the menu and highlights FIRST (always visible, even when overlay is open)
+        if (!aboutOpen && !kybdOpen) {
+            for (int i = 0; i < MENU_ITEM_COUNT; i++) {
                 SDL_Rect rect = mrect[i];
                 SDL_Rect shadow = rect;
-                shadow.x += SCALEX(8); shadow.y += SCALEY(8); // Drop shadow offset
+                shadow.x += SCALEX(8); shadow.y += SCALEY(8);
 
-                // Draw drop shadow (soft black, semi-transparent)
+                // Draw drop shadow
                 SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
                 SDL_SetRenderDrawColor(renderer, 0, 0, 0, 80);
                 SDL_RenderFillRect(renderer, &shadow);
@@ -411,7 +425,7 @@ int main(void) {
                     : (SDL_Color){255,255,255,255};
 
                 // Draw menu text centered
-                SDL_Surface* ms = TTF_RenderText_Solid(
+                SDL_Surface* ms = TTF_RenderText_Blended(
                     font24, items[i], textColor);
                 SDL_Texture* tx = SDL_CreateTextureFromSurface(renderer, ms);
                 SDL_Rect textRect = rect;
@@ -423,14 +437,130 @@ int main(void) {
                 SDL_RenderCopy(renderer, tx, NULL, &textRect);
                 SDL_DestroyTexture(tx);
             }
-            if (ep)  SDL_RenderCopy(renderer, ep,  NULL, &epr);
-            if (eb)  SDL_RenderCopy(renderer, eb,  NULL, &ebr);
-            if (ep2) SDL_RenderCopy(renderer, ep2, NULL, &ep2r);
+        } else {
+            // Draw the menu as background (NO highlight), About/keyboard overlay on top
+            for (int i = 0; i < MENU_ITEM_COUNT; i++) {
+                SDL_Rect rect = mrect[i];
 
-            if (xiT) SDL_RenderCopy(renderer, xiT, NULL, &xiR);
-            if (stT) SDL_RenderCopy(renderer, stT, NULL, &stR);
-            if (ipT) SDL_RenderCopy(renderer, ipT, NULL, &ipR);
+                // Draw menu background (gray oct)
+                FillOct(renderer, rect, SCALEY(12), (SDL_Color){36,36,36,255});
+                // Octagonal border
+                SDL_SetRenderDrawColor(renderer, 80, 255, 100, 255);
+                DrawOct(renderer, rect, SCALEY(12), (SDL_Color){80, 255, 100, 255});
+
+                // Disabled state: all except About (6) are disabled if not present
+                bool isDisabled = !xifiPresent && i != 6;
+                SDL_Color textColor = isDisabled
+                    ? (SDL_Color){0,0,0,255}
+                    : (SDL_Color){255,255,255,255};
+
+                // Draw menu text centered
+                SDL_Surface* ms = TTF_RenderText_Blended(
+                    font24, items[i], textColor);
+                SDL_Texture* tx = SDL_CreateTextureFromSurface(renderer, ms);
+                SDL_Rect textRect = rect;
+                textRect.x += (rect.w - ms->w) / 2;
+                textRect.y += (rect.h - ms->h) / 2;
+                textRect.w = ms->w;
+                textRect.h = ms->h;
+                SDL_FreeSurface(ms);
+                SDL_RenderCopy(renderer, tx, NULL, &textRect);
+                SDL_DestroyTexture(tx);
+            }
+
+            // Draw About overlay if open (drawn below keyboard if both open)
+            if (aboutOpen) {
+                SDL_Rect ov = {SCALEX(240), SCALEY(140), SCALEX(800), SCALEY(440)};
+                // Drop shadow for overlay
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
+                SDL_Rect shadow = {ov.x + SCALEX(14), ov.y + SCALEY(14), ov.w, ov.h};
+                SDL_RenderFillRect(renderer, &shadow);
+
+                // About main panel -- SOLID BLACK
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderFillRect(renderer, &ov);
+
+                // Border
+                SDL_SetRenderDrawColor(renderer, 80, 255, 100, 255);
+                SDL_RenderDrawRect(renderer, &ov);
+
+                // About text content
+                const char* lines[] = {
+                    "XiFi Config", "",
+                    "Code by:", "Darkone83", "",
+                    "Music By:", "Darkone83"
+                };
+                for (int i = 0; i < 7; i++) {
+                    if (lines[i][0]) {
+                        SDL_Surface* ls = TTF_RenderText_Blended(
+                            font28, lines[i], (SDL_Color){255,255,255,255});
+                        SDL_Texture* lt = SDL_CreateTextureFromSurface(renderer, ls);
+                        SDL_Rect dr = {
+                            (screen_width - ls->w) / 2,
+                            SCALEY(160) + i * SCALEY(40),
+                            ls->w, ls->h
+                        };
+                        SDL_FreeSurface(ls);
+                        SDL_RenderCopy(renderer, lt, NULL, &dr);
+                        SDL_DestroyTexture(lt);
+                    }
+                }
+
+                // --- Logo images, centered with drop shadow and anti-aliased scaling ---
+                int sz = SCALEY(64);
+                int startX = (screen_width - (sz + SCALEX(20) + sz)) / 2;
+                int logoY = SCALEY(140) + 7 * SCALEY(40) + SCALEY(20);
+
+                // Drop shadows for images
+                SDL_Rect r1_shadow = {startX + SCALEX(8), logoY + SCALEY(8), sz, sz};
+                SDL_Rect r2_shadow = {startX + sz + SCALEX(20) + SCALEX(8), logoY + SCALEY(8), sz, sz};
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 100);
+                SDL_RenderFillRect(renderer, &r1_shadow);
+                SDL_RenderFillRect(renderer, &r2_shadow);
+
+                // Actual images (now smooth-scaled!)
+                SDL_Rect r1 = {startX, logoY, sz, sz};
+                SDL_Rect r2 = {startX + sz + SCALEX(20), logoY, sz, sz};
+                if (dcT) SDL_RenderCopy(renderer, dcT, NULL, &r1);
+                if (trT) SDL_RenderCopy(renderer, trT, NULL, &r2);
+            }
+
+            // Draw On-Screen Keyboard overlay if open (always drawn on top)
+            if (kybdOpen) {
+                // --- MODAL OVERLAY PANEL WITH DROP SHADOW OUTSIDE ---
+                int panel_w = SCALEX(960);
+                int panel_h = SCALEY(420);
+                int panel_x = (screen_width - panel_w) / 2;
+                int panel_y = (screen_height - panel_h) / 2;
+                SDL_Rect panel = { panel_x, panel_y, panel_w, panel_h };
+
+                // Drop shadow (outside)
+                SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 160);
+                SDL_Rect shadow = { panel.x + SCALEX(14), panel.y + SCALEY(14), panel.w, panel.h };
+                SDL_RenderFillRect(renderer, &shadow);
+
+                // Black modal panel
+                SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+                SDL_RenderFillRect(renderer, &panel);
+
+                // Neon green border
+                SDL_SetRenderDrawColor(renderer, 80, 255, 100, 255);
+                SDL_RenderDrawRect(renderer, &panel);
+
+                // Draw the keyboard inside the modal (no extra green backgrounds)
+                kybd_draw(renderer, screen_width, screen_height, kb_text);
+            }
         }
+
+        if (ep)  SDL_RenderCopy(renderer, ep,  NULL, &epr);
+        if (eb)  SDL_RenderCopy(renderer, eb,  NULL, &ebr);
+        if (ep2) SDL_RenderCopy(renderer, ep2, NULL, &ep2r);
+
+        if (xiT) SDL_RenderCopy(renderer, xiT, NULL, &xiR);
+        if (stT) SDL_RenderCopy(renderer, stT, NULL, &stR);
+        if (ipT) SDL_RenderCopy(renderer, ipT, NULL, &ipR);
 
         SDL_RenderPresent(renderer);
         SDL_Delay(16);
@@ -439,5 +569,28 @@ int main(void) {
 cleanup:
     SDL_CloseAudio();
     if (audio_file) fclose(audio_file);
+
+    // --- RESOURCE CLEANUP ---
+    if (titleTex) SDL_DestroyTexture(titleTex);
+    if (bgTexture) SDL_DestroyTexture(bgTexture);
+    if (ep)  SDL_DestroyTexture(ep);
+    if (eb)  SDL_DestroyTexture(eb);
+    if (ep2) SDL_DestroyTexture(ep2);
+    if (xiT) SDL_DestroyTexture(xiT);
+    if (stT) SDL_DestroyTexture(stT);
+    if (ipT) SDL_DestroyTexture(ipT);
+    if (dcT) SDL_DestroyTexture(dcT);
+    if (trT) SDL_DestroyTexture(trT);
+
+    if (font48) TTF_CloseFont(font48);
+    if (font24) TTF_CloseFont(font24);
+    if (font28) TTF_CloseFont(font28);
+
+    if (renderer) SDL_DestroyRenderer(renderer);
+    if (window) SDL_DestroyWindow(window);
+
+    TTF_Quit();
+    IMG_Quit();
+    SDL_Quit();
     return 0;
 }

@@ -3,7 +3,6 @@
 #include <SDL.h>
 #include <stdint.h>
 #include <string.h>
-#include <ctype.h>
 
 // --- Scaling macros for window size ---
 #define SCALEX(x) ((int)((float)(x) * win_w / 1280.0f))
